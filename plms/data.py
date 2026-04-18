@@ -18,5 +18,9 @@ def get_dataset(path: str = 'shnl/qg-example',
                 use_auth_token: bool = False):
     """ Get question generation input/output list of texts. """
     name = None if name == 'default' else name
-    dataset = load_dataset(path, name, split=split, use_auth_token=use_auth_token)
+    # Support both use_auth_token (deprecated) and token (new parameter)
+    kwargs = {'split': split}
+    if use_auth_token:
+        kwargs['token'] = use_auth_token if isinstance(use_auth_token, str) else True
+    dataset = load_dataset(path, name, **kwargs)
     return dataset[input_type], dataset[output_type]
