@@ -101,8 +101,19 @@ class Evaluation:
             if _split not in output:
                 output[_split] = {}
 
-            dataset = load_dataset(self.dataset_path, None if self.dataset_name == 'default' else self.dataset_name,
-                                   split=_split, use_auth_token=True)
+            # Load dataset - avoid use_auth_token for local datasets
+            try:
+                dataset = load_dataset(
+                    self.dataset_path, 
+                    None if self.dataset_name == 'default' else self.dataset_name,
+                    split=_split
+                )
+            except TypeError:
+                # Fallback for older datasets versions that don't support this syntax
+                dataset = load_dataset(
+                    self.dataset_path, 
+                    split=_split
+                )
             df = dataset.to_pandas()
 
             # formatting data into qag format
