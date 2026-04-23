@@ -68,6 +68,14 @@ def load_language_model(model_name,
     # tokenizer
     local_files_only = not internet_connection()
     
+    # If model path starts with ./ it's a local path, check if it exists
+    if model_name.startswith('./') or model_name.startswith('models/'):
+        if not os.path.exists(model_name):
+            logging.warning(f"Local model path {model_name} not found. Will try to use as HuggingFace model ID")
+            # Remove local path prefix and use as HuggingFace model
+            model_name = model_name.replace('./models/', '').replace('models/', '')
+            local_files_only = False
+    
     tokenizer = None
     # Try loading with use_fast=True first
     try:
