@@ -1,27 +1,29 @@
 """
 Dataset Rebuilder: Convert weakly-aligned flashcard data to strict extractive QA
-Pipeline: normalize → fuzzy locate span in normalized → map back to original
+
+Strategy: 
+1. Try exact substring match first
+2. If fail → use SequenceMatcher + extract exact matched span (no expansion)
+3. Strict: require ≥80% match coverage + ≥90% threshold
+4. Drop if span too long (preserve semantic integrity, never truncate)
+5. Log answer length distribution before/after
+
+Semantics (SQuAD-style extractive QA):
+- Answer = exact substring from context
+- _answer_start = starting position in context
+- No word boundary expansion (preserves training signal purity)
 
 Usage:
-    python rebuild_dataset.py --input_dir examples_ai_flashcard --output_dir examples_ai_flashcard_fixed
+    python rebuild_dataset.py --input_dir examples_ai_flashcard --output_dir examples_ai_flashcard_fixed --threshold 90
 """
 
 import json
 import os
 import re
-import unicodedata
 import logging
 from pathlib import Path
 from typing import Tuple, Optional, Dict, List
 from difflib import SequenceMatcher
-
-# Try to use rapidfuzz for better fuzzy matching, fallback to difflib
-try:
-    from rapidfuzz import fuzz
-    USE_RAPIDFUZZ = True
-except ImportError:
-    USE_RAPIDFUZZ = False
-    print("⚠️  rapidfuzz not found. Using difflib (slower). Install: pip install rapidfuzz")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -30,11 +32,16 @@ logger = logging.getLogger(__name__)
 class DatasetRebuilder:
     """Rebuild dataset to ensure answers are 100% substrings of context."""
     
-    def __init__(self, threshold: float = 85.0):
+    # Global config
+    THRESHOLD_DEFAULT = 90.0
+    COVERAGE_MIN = 0.80  # Require ≥80% of answer matched
+    ANSWER_MAX_LEN = 200  # Drop if too long (preserve semantic integrity, not truncate)
+    
+    def __init__(self, threshold: float = THRESHOLD_DEFAULT):
         """
         Args:
             threshold: Fuzzy match score threshold (0-100)
-                      85-90 recommended for balance between cleaning and preservation
+                      90 recommended for strict semantic preservation
         """
         self.threshold = threshold
         self.stats = {
@@ -42,125 +49,91 @@ class DatasetRebuilder:
             "exact": 0,
             "fuzzy_fixed": 0,
             "dropped": 0,
-            "avg_fuzzy_score": 0.0
+            "avg_fuzzy_score": 0.0,
+            "avg_answer_length_before": 0.0,
+            "avg_answer_length_after": 0.0,
         }
         self.dropped_samples = []
         self.fuzzy_scores = []
+        self.answer_lengths_before = []
+        self.answer_lengths_after = []
     
-    @staticmethod
-    def normalize(text: str) -> str:
+    def find_span_in_text(self, answer: str, context: str) -> Tuple[Optional[str], float, str, Optional[int]]:
         """
-        Normalize text for search only:
-        - Lowercase
-        - Unicode NFC normalization (preserve diacritics - critical for Vietnamese!)
-        - Strip whitespace
-        - Replace multiple spaces with single space
+        Find answer span in context using pure extractive QA semantics.
         
-        ⚠️  DO NOT remove diacritics: "học" vs "hóc" vs "họa" are different!
-        """
-        # Unicode normalization NFC (compose characters, preserve diacritics)
-        text = unicodedata.normalize('NFC', text)
-        # Lowercase and strip
-        text = text.lower().strip()
-        # Replace multiple spaces
-        text = ' '.join(text.split())
-        return text
-    
-    def find_span_in_text(self, answer: str, context: str) -> Tuple[Optional[str], float, str]:
-        """
-        Find answer span in context using SequenceMatcher on ORIGINAL text.
-        
-        🎯 Golden rule: NEVER map normalized → original via heuristic
+        Strategy:
+        1. Try exact match first (fastest, safest)
+        2. If fail → use SequenceMatcher to find best match
+        3. Extract exact span (NO word boundary expansion to preserve training signal)
+        4. Strict: require ≥80% match coverage + ≥90% threshold
+        5. Drop if span too long (preserve semantic precision)
         
         Returns:
-            (extracted_answer, score, status)
-            - extracted_answer: exact substring from original context (or None)
-            - score: match score 0-100
-            - status: "exact", "fuzzy", or "dropped"
+            (extracted_answer, score, status, answer_start_index)
         """
-        # Step 1: Try exact substring match on ORIGINAL text (fastest, safest path)
-        if answer in context:
-            return answer, 100.0, "exact"
+        self.answer_lengths_before.append(len(answer))
         
-        # Step 2: Use SequenceMatcher on ORIGINAL text for fuzzy matching
-        extracted, score = self._extract_span_sequencematcher(answer, context)
+        # Step 1: Try exact substring match
+        if answer in context:
+            self.answer_lengths_after.append(len(answer))
+            return answer, 100.0, "exact", context.index(answer)
+        
+        # Step 2: Fuzzy matching with window extraction
+        extracted, score, start_idx = self._extract_span_with_window(answer, context)
         
         if extracted and score >= self.threshold:
             self.fuzzy_scores.append(score)
-            return extracted, score, "fuzzy"
+            self.answer_lengths_after.append(len(extracted))
+            return extracted, score, "fuzzy", start_idx
         
-        # Step 3: No match - drop sample
-        return None, score if score else 0.0, "dropped"
+        # Step 3: No good match - drop sample
+        return None, score if score else 0.0, "dropped", None
     
-    def _extract_span_sequencematcher(self, answer: str, context: str) -> Tuple[Optional[str], float]:
+    def _extract_span_with_window(self, answer: str, context: str) -> Tuple[Optional[str], float, Optional[int]]:
         """
-        Extract span using SequenceMatcher directly on ORIGINAL text.
+        Extract answer using SequenceMatcher + exact span extraction (SQuAD-style).
         
-        🎯 Golden principle:
-        - Work on ORIGINAL text only
-        - No normalized ↔ original mapping
-        - Direct substring extraction
-        - Strict validation to avoid partial/semantic corruption
+        🎯 Pure extractive QA semantics:
+        - Use SequenceMatcher to find best match
+        - Extract EXACT matched span (no word boundary expansion)
+        - Why no expansion? To preserve exact semantics + avoid training noise
+        - Drop if span too long (preserve semantic precision)
         
-        Returns: (extracted_span, score)
-            - extracted_span: actual substring from context
-            - score: % of answer that matched (0-100)
+        Returns: (extracted_span, score, start_index_in_context)
         """
-        # Find longest matching block between answer and context
+        # Find longest matching block
         matcher = SequenceMatcher(None, answer, context)
         match = matcher.find_longest_match(0, len(answer), 0, len(context))
         
         if match.size == 0:
-            return None, 0.0
+            return None, 0.0, None
         
-        # ✅ Fix 3: Reject partial matches that are too small
-        # Require at least 60% of answer to be matched (avoid semantic corruption)
+        # Calculate coverage: what % of answer was matched
         coverage_answer = (match.size / len(answer)) if len(answer) > 0 else 0
-        if coverage_answer < 0.60:  # Less than 60% match = too risky
-            return None, coverage_answer * 100
+        score = coverage_answer * 100
         
-        # Extract span directly from context using match position
+        # Strict: require at least COVERAGE_MIN of answer matched
+        if coverage_answer < self.COVERAGE_MIN:
+            return None, score, None
+        
+        # Extract EXACT matched span (pure extractive QA - no expansion)
+        # This preserves semantic integrity for model training
         span_start = match.b
         span_end = match.b + match.size
+        span = context[span_start:span_end].strip()
         
-        # Expand to word boundaries for better semantic meaning
-        span = self._expand_to_word_boundary(context, span_start, span_end)
+        # Check length: DROP if too long (don't truncate/corrupt semantic meaning)
+        if len(span) > self.ANSWER_MAX_LEN:
+            return None, score, span_start  # Return score for logging but reject span
         
-        # ✅ Fix 1: Validate span is actually in context (sanity check)
-        if span not in context:
-        ✅ Fix 4: Support Vietnamese with diacritics + unicode word chars
+        # Edge case warning: log if coverage suggests possible multi-span answer
+        # (longest block found, but answer might have multiple important parts)
+        if 0.8 <= coverage_answer < 0.95 and match.size < len(answer) * 0.5:
+            # Low coverage block - might be multi-span, log for review
+            logger.debug(f"Edge case: low-coverage match ({score:.1f}%) - possible multi-span answer")
         
-        Example:
-            text: "The machine learning algorithm works well"
-            span: [4:19] = "machine learning"
-            → no expansion needed, already at word boundaries
-        """
-        # Vietnamese word character pattern (includes diacritics)
-        # \w in regex with UNICODE flag matches most unicode letters/digits
-        word_char_pattern = re.compile(r'\w', re.UNICODE)
-        
-        # Expand left to word boundary
-        while start > 0 and word_char_pattern.match(text[start - 1]):
-            start -= 1
-        
-        # Expand right to word boundary
-        while end < len(text) and word_char_pattern.match(text[end]
-        Expand span to complete words (avoid cutting mid-word).
-        
-        Example:
-            text: "The machine learning algorithm works well"
-            span: [4:19] = "machine learning"
-            → no expansion needed, already at word boundaries
-        """
-        # Expand left to word boundary
-        while start > 0 and text[start - 1].isalnum():
-            start -= 1
-        
-        # Expand right to word boundary
-        while end < len(text) and text[end].isalnum():
-            end += 1
-        
-        return text[start:end].strip()
+        return span if span else None, score, span_start
     
     def process_file(self, input_path: str, output_path: str) -> Dict:
         """
@@ -191,7 +164,7 @@ class DatasetRebuilder:
                 self.stats["total"] += 1
                 
                 # Extract substring match
-                extracted_answer, score, status = self.find_span_in_text(answer, context)
+                extracted_answer, score, status, answer_start = self.find_span_in_text(answer, context)
                 
                 if status == "exact":
                     file_stats["exact"] += 1
@@ -199,6 +172,7 @@ class DatasetRebuilder:
                     data['answer'] = extracted_answer
                     data['_match_type'] = 'exact'
                     data['_match_score'] = 100.0
+                    data['_answer_start'] = answer_start
                     samples.append(data)
                     
                 elif status == "fuzzy":
@@ -207,6 +181,7 @@ class DatasetRebuilder:
                     data['answer'] = extracted_answer
                     data['_match_type'] = 'fuzzy'
                     data['_match_score'] = score
+                    data['_answer_start'] = answer_start
                     data['_original_answer'] = answer
                     samples.append(data)
                     
@@ -235,9 +210,7 @@ class DatasetRebuilder:
         return file_stats
     
     def rebuild(self, input_dir: str, output_dir: str):
-        """
-        Rebuild all dataset files (train/val/test).
-        """
+        """Rebuild all dataset files (train/val/test)."""
         input_path = Path(input_dir)
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -246,6 +219,8 @@ class DatasetRebuilder:
         logger.info(f"   Input:  {input_path}")
         logger.info(f"   Output: {output_path}")
         logger.info(f"   Threshold: {self.threshold}")
+        logger.info(f"   Coverage min: {self.COVERAGE_MIN * 100}%")
+        logger.info(f"   Answer max len: {self.ANSWER_MAX_LEN} (drop if exceeds)")
         
         # Process each split
         for split in ['train', 'validation', 'test']:
@@ -261,6 +236,11 @@ class DatasetRebuilder:
         # Calculate final stats
         if self.stats["fuzzy_fixed"] > 0:
             self.stats["avg_fuzzy_score"] = sum(self.fuzzy_scores) / len(self.fuzzy_scores)
+        
+        if self.answer_lengths_before:
+            self.stats["avg_answer_length_before"] = sum(self.answer_lengths_before) / len(self.answer_lengths_before)
+        if self.answer_lengths_after:
+            self.stats["avg_answer_length_after"] = sum(self.answer_lengths_after) / len(self.answer_lengths_after)
         
         self._print_summary(output_path)
         self._save_metadata(output_path)
@@ -278,7 +258,14 @@ class DatasetRebuilder:
         if self.stats['fuzzy_fixed'] > 0:
             logger.info(f"📈 Avg fuzzy score: {self.stats['avg_fuzzy_score']:.1f}/100")
         
-        logger.info(f"\n✨ Threshold: {self.threshold}")
+        logger.info(f"\n📏 Answer Length Stats:")
+        logger.info(f"   Before: {self.stats['avg_answer_length_before']:.1f} chars (avg)")
+        logger.info(f"   After:  {self.stats['avg_answer_length_after']:.1f} chars (avg)")
+        
+        logger.info(f"\n✨ Config:")
+        logger.info(f"   Threshold: {self.threshold}")
+        logger.info(f"   Coverage min: {self.COVERAGE_MIN * 100}%")
+        logger.info(f"   Answer max len: {self.ANSWER_MAX_LEN} (drop if exceeds)")
         logger.info(f"📁 Output: {output_dir}")
         logger.info("="*70)
     
@@ -287,6 +274,14 @@ class DatasetRebuilder:
         # Stats JSON
         metadata = {
             "threshold": self.threshold,
+            "coverage_min": self.COVERAGE_MIN,
+            "answer_max_len": self.ANSWER_MAX_LEN,
+            "extraction_strategy": "exact_span_no_expansion",
+            "notes": {
+                "semantics": "Pure extractive QA (SQuAD-style): answer = exact substring from context",
+                "word_expansion": "DISABLED - preserves training signal purity",
+                "multi_span_limitation": "SequenceMatcher finds longest contiguous block only. Multi-span answers (A...B) rely on coverage threshold (0.8+)"
+            },
             "stats": self.stats,
             "dropped_count": len(self.dropped_samples)
         }
@@ -313,8 +308,8 @@ if __name__ == "__main__":
                        help="Input directory with original JSONL files")
     parser.add_argument("--output_dir", default="data/examples_ai_flashcard_fixed",
                        help="Output directory for fixed JSONL files")
-    parser.add_argument("--threshold", type=float, default=85.0,
-                       help="Fuzzy match threshold (85-90 recommended)")
+    parser.add_argument("--threshold", type=float, default=90.0,
+                       help="Fuzzy match score threshold (90 recommended)")
     
     args = parser.parse_args()
     
