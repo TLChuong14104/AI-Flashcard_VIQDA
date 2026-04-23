@@ -116,20 +116,34 @@ class Evaluation:
                 )
             df = dataset.to_pandas()
 
-            # Check if required columns exist
-            required_columns = ['context', 'question', 'answer']
-            missing_columns = [col for col in required_columns if col not in df.columns]
-            if missing_columns:
-                logging.error(f"Dataset missing required columns: {missing_columns}")
-                logging.error(f"Available columns: {list(df.columns)}")
-                raise KeyError(f"Missing columns: {missing_columns}")
+            # Detect column names (handle different naming conventions)
+            available_cols = set(df.columns)
+            logging.info(f"Dataset columns: {list(available_cols)}")
+            
+            # Detect context/paragraph column
+            context_col = None
+            if 'context' in available_cols:
+                context_col = 'context'
+            elif 'paragraph' in available_cols:
+                context_col = 'paragraph'
+            else:
+                logging.error(f"Dataset missing 'context' or 'paragraph' column. Available: {list(available_cols)}")
+                raise KeyError(f"Missing 'context' or 'paragraph' column")
+            
+            # Check for required columns
+            required_cols = [context_col, 'question', 'answer']
+            missing_cols = [col for col in required_cols if col not in available_cols]
+            if missing_cols:
+                logging.error(f"Dataset missing required columns: {missing_cols}")
+                logging.error(f"Available columns: {list(available_cols)}")
+                raise KeyError(f"Missing columns: {missing_cols}")
 
             # formatting data into qag format
             model_input = []
             gold_reference = []
             model_highlight = []
-            for paragraph, g in df.groupby("context"):
-                model_input.append(paragraph)
+            for context_val, g in df.groupby(context_col):
+                model_input.append(context_val)
                 model_highlight.append(g['answer'].tolist())
                 gold_reference.append(' [SEP] '.join([
                     f"question: {i['question']}, answer: {i['answer']}" for _, i in g.iterrows()
