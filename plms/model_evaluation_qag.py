@@ -130,13 +130,19 @@ class Evaluation:
                 logging.error(f"Dataset missing 'context' or 'paragraph' column. Available: {list(available_cols)}")
                 raise KeyError(f"Missing 'context' or 'paragraph' column")
             
-            # Check for required columns
-            required_cols = [context_col, 'question', 'answer']
-            missing_cols = [col for col in required_cols if col not in available_cols]
-            if missing_cols:
-                logging.error(f"Dataset missing required columns: {missing_cols}")
-                logging.error(f"Available columns: {list(available_cols)}")
-                raise KeyError(f"Missing columns: {missing_cols}")
+            # Detect question/questions column
+            question_col = 'question' if 'question' in available_cols else 'questions'
+            if question_col not in available_cols:
+                logging.error(f"Dataset missing 'question' or 'questions' column. Available: {list(available_cols)}")
+                raise KeyError(f"Missing 'question' or 'questions' column")
+            
+            # Detect answer/answers column
+            answer_col = 'answer' if 'answer' in available_cols else 'answers'
+            if answer_col not in available_cols:
+                logging.error(f"Dataset missing 'answer' or 'answers' column. Available: {list(available_cols)}")
+                raise KeyError(f"Missing 'answer' or 'answers' column")
+
+            logging.info(f"Using columns: context={context_col}, question={question_col}, answer={answer_col}")
 
             # formatting data into qag format
             model_input = []
@@ -144,9 +150,9 @@ class Evaluation:
             model_highlight = []
             for context_val, g in df.groupby(context_col):
                 model_input.append(context_val)
-                model_highlight.append(g['answer'].tolist())
+                model_highlight.append(g[answer_col].tolist())
                 gold_reference.append(' [SEP] '.join([
-                    f"question: {i['question']}, answer: {i['answer']}" for _, i in g.iterrows()
+                    f"question: {i[question_col]}, answer: {i[answer_col]}" for _, i in g.iterrows()
                 ]))
             prediction = None
             if not self.overwrite_prediction and os.path.exists(_file):
