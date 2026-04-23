@@ -61,10 +61,14 @@ def internet_connection(host='http://google.com'):
 def load_language_model(model_name,
                         cache_dir: str = None,
                         use_auth_token: bool = False,
+                        token: str = None,
                         torch_dtype=None,
                         device_map: str = None,
                         low_cpu_mem_usage: bool = False):
     """ load language model from huggingface model hub """
+    # Support both old use_auth_token and new token parameter
+    hf_token = token if token is not None else (True if use_auth_token else None)
+    
     # tokenizer
     local_files_only = not internet_connection()
     
@@ -80,7 +84,7 @@ def load_language_model(model_name,
     # Try loading with use_fast=True first
     try:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
-            model_name, cache_dir=cache_dir, local_files_only=local_files_only, use_auth_token=use_auth_token, 
+            model_name, cache_dir=cache_dir, local_files_only=local_files_only, token=hf_token, 
             trust_remote_code=True, use_fast=True)
         logging.info(f"Successfully loaded fast tokenizer for {model_name}")
     except (TypeError, ValueError, AttributeError) as e:
@@ -88,7 +92,7 @@ def load_language_model(model_name,
         # Try with use_fast=False
         try:
             tokenizer = transformers.AutoTokenizer.from_pretrained(
-                model_name, cache_dir=cache_dir, local_files_only=local_files_only, use_auth_token=use_auth_token, 
+                model_name, cache_dir=cache_dir, local_files_only=local_files_only, token=hf_token, 
                 trust_remote_code=True, use_fast=False)
             logging.info(f"Loaded slow tokenizer for {model_name}")
         except Exception as e2:
@@ -96,7 +100,7 @@ def load_language_model(model_name,
             # Last resort: try without trust_remote_code
             try:
                 tokenizer = transformers.AutoTokenizer.from_pretrained(
-                    model_name, cache_dir=cache_dir, local_files_only=local_files_only, use_auth_token=use_auth_token, 
+                    model_name, cache_dir=cache_dir, local_files_only=local_files_only, token=hf_token, 
                     use_fast=False)
                 logging.warning(f"Loaded tokenizer without trust_remote_code for {model_name}")
             except Exception as e3:
@@ -104,7 +108,7 @@ def load_language_model(model_name,
                 raise
     
     config = transformers.AutoConfig.from_pretrained(
-        model_name, local_files_only=local_files_only, cache_dir=cache_dir, use_auth_token=use_auth_token, trust_remote_code=True)
+        model_name, local_files_only=local_files_only, cache_dir=cache_dir, token=hf_token, trust_remote_code=True)
     # model
     if config.model_type == 't5':  # T5 model requires T5ForConditionalGeneration class
         model_class = transformers.T5ForConditionalGeneration.from_pretrained
@@ -119,7 +123,7 @@ def load_language_model(model_name,
     else:
         raise ValueError(f'unsupported model type: {config.model_type}')
 
-    param = {'config': config, "local_files_only": local_files_only, "use_auth_token": use_auth_token,
+    param = {'config': config, "local_files_only": local_files_only, "token": hf_token,
              "low_cpu_mem_usage": low_cpu_mem_usage, "cache_dir": cache_dir}
     if torch_dtype is not None:
         param['torch_dtype'] = torch_dtype
