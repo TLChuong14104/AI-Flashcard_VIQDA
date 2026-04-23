@@ -116,11 +116,19 @@ class Evaluation:
                 )
             df = dataset.to_pandas()
 
+            # Check if required columns exist
+            required_columns = ['context', 'question', 'answer']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                logging.error(f"Dataset missing required columns: {missing_columns}")
+                logging.error(f"Available columns: {list(df.columns)}")
+                raise KeyError(f"Missing columns: {missing_columns}")
+
             # formatting data into qag format
             model_input = []
             gold_reference = []
             model_highlight = []
-            for paragraph, g in df.groupby("paragraph"):
+            for paragraph, g in df.groupby("context"):
                 model_input.append(paragraph)
                 model_highlight.append(g['answer'].tolist())
                 gold_reference.append(' [SEP] '.join([

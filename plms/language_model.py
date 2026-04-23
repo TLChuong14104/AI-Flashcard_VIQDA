@@ -4,7 +4,7 @@ import pickle
 import re
 import urllib
 from itertools import chain
-from typing import List, Dict
+from typing import List, Dict, Union
 from multiprocessing import Pool
 import numpy as np
 from tqdm import tqdm
@@ -377,7 +377,7 @@ class TransformersQG:
         self.tokenizer.push_to_hub(repo_id)
 
     def generate_qa_end2end(self,
-                            list_context: str or List,
+                            list_context: Union[str, List],
                             batch_size: int = None,
                             num_beams: int = 4,
                             cache_path: str = None,
@@ -421,7 +421,7 @@ class TransformersQG:
         return output[0] if single_input else output
 
     def generate_qa(self,
-                    list_context: str or List,
+                    list_context: Union[str, List],
                     batch_size: int = None,
                     num_beams: int = 4,
                     cache_path: str = None,
@@ -484,7 +484,7 @@ class TransformersQG:
         return output_list[0] if single_input else output_list
 
     def generate_a(self,
-                   context: str or List,
+                   context: Union[str, List],
                    batch_size: int = None,
                    num_beams: int = 4,
                    cache_path: str = None,
@@ -550,7 +550,7 @@ class TransformersQG:
         return list_answer[0] if single_input else list_answer
 
     def generate_q(self,
-                   list_context: str or List,
+                   list_context: Union[str, List],
                    list_answer: List = None,
                    batch_size: int = None,
                    num_beams: int = 4,
@@ -589,8 +589,8 @@ class TransformersQG:
         return output
 
     def answer_q(self,
-                 list_context: str or List,
-                 list_question: str or List,
+                 list_context: Union[str, List],
+                 list_question: Union[str, List],
                  batch_size: int = None,
                  num_beams: int = 4,
                  cache_path: str = None):

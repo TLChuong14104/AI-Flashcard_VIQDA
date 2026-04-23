@@ -27,7 +27,7 @@ def post_process(refs_or_preds: list[str]):
 
     results: list[str, list[str]] = {'question': [], 'answer': []}
     for e in refs_or_preds:
-        pairs: list[str] = [i.strip() for i in re.split('\[SEP\]', e) if i.strip()]
+        pairs: list[str] = [i.strip() for i in re.split(r'\[SEP\]', e) if i.strip()]
         questions = []
         answers = []
         for qa in pairs:
