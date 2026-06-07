@@ -17,6 +17,8 @@ COLUMN_MAPPING = {
     'question': 'question',
     'answer': 'answer',
     'questions_answers': 'question',
+    'qag_input': 'text_input',  # For processed QA data
+    'qag_output': 'text_output',  # For processed QA data
 }
 
 
