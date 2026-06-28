@@ -553,8 +553,34 @@ class TransformersQG:
         # return to nested list
         answer = [clean(a) for a in answer]
         list_answer = [answer[list_length[n - 1]:list_length[n]] for n in range(1, len(list_length))]
-        list_answer = [[a for a, c in zip(a_sent, c_sent) if a is not None and a in c]
+
+        # Filter answers: must appear in context (exact or fuzzy)
+        def find_answer_in_context(ans, ctx):
+            """Try exact match first, then fuzzy substring match."""
+            if ans is None:
+                return None
+            # Exact match
+            if ans in ctx:
+                return ans
+            # Fuzzy: find best matching span in context
+            from difflib import SequenceMatcher
+            ans_len = len(ans)
+            best_span, best_ratio = None, 0.6  # min threshold
+            for mult in [1.0, 0.8, 1.2]:
+                w = max(5, int(ans_len * mult))
+                for i in range(0, max(1, len(ctx) - w + 1), 2):
+                    candidate = ctx[i:i + w]
+                    r = SequenceMatcher(None, ans.lower(), candidate.lower()).ratio()
+                    if r > best_ratio:
+                        best_ratio = r
+                        best_span = candidate
+            if best_span:
+                logging.info(f'fuzzy answer match: "{ans[:40]}" → "{best_span[:40]}" ({best_ratio:.0%})')
+            return best_span
+
+        list_answer = [[find_answer_in_context(a, c) for a, c in zip(a_sent, c_sent)]
                        for a_sent, c_sent in zip(list_answer, list_inputs)]
+        list_answer = [[a for a in answers if a is not None] for answers in list_answer]
         list_answer = [None if len(a) == 0 else a for a in list_answer]
         if not self.drop_answer_error_text:
             if any(a is None for a in list_answer):
