@@ -5,9 +5,31 @@ from glob import glob
 from tqdm import tqdm
 from typing import Dict
 from underthesea import sent_tokenize
+from difflib import SequenceMatcher
 import fire
 
 HIGHLIGHT_TOKEN = '<hl>'
+
+
+def find_best_span(paragraph: str, answer: str, min_ratio: float = 0.5) -> int:
+    """Find the best matching span in paragraph for the given answer.
+    Returns the start position of the best match, or -1 if no good match found.
+    """
+    answer_len = len(answer)
+    best_pos = -1
+    best_ratio = min_ratio
+    
+    # Sliding window: try spans of similar length to the answer
+    for window_mult in [1.0, 0.8, 1.2, 0.6, 1.5]:
+        window = max(10, int(answer_len * window_mult))
+        for i in range(0, len(paragraph) - window + 1, 3):  # step=3 for speed
+            candidate = paragraph[i:i + window]
+            ratio = SequenceMatcher(None, answer.lower(), candidate.lower()).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_pos = i
+    
+    return best_pos
 
 class QGDataProcessor:
     def __init__(self):
@@ -34,9 +56,7 @@ class QGDataProcessor:
                     example = json.loads(line)
                     examples.append(example)
                 except json.JSONDecodeError as e:
-                    print(f"Warning: Skipping malformed JSON at {filename}:{line_num}")
-                    print(f"  Error: {e}")
-                    print(f"  Content: {line[:100]}...")
+                    print(f"Warning: Skipping malformed JSON at {filename}:{line_num} - {e}")
                     continue
         return examples
 
@@ -46,6 +66,38 @@ class QGDataProcessor:
 
         # get sentence
         position = example['paragraph'].find(example['answer'])
+        
+        # Fallback 1: try _original_answer if available
+        if position == -1 and '_original_answer' in data:
+            orig = data['_original_answer']
+            pos2 = example['paragraph'].find(orig)
+            if pos2 != -1:
+                example['answer'] = orig
+                position = pos2
+        
+        # Fallback 2: fuzzy find best matching span
+        if position == -1:
+            best_pos = find_best_span(example['paragraph'], example['answer'], min_ratio=0.55)
+            if best_pos != -1:
+                # Extract the actual span from paragraph
+                ans_len = len(example['answer'])
+                # Try a few window sizes around the best position
+                best_span = None
+                best_r = 0
+                for mult in [0.8, 0.9, 1.0, 1.1, 1.2]:
+                    w = max(10, int(ans_len * mult))
+                    end = min(best_pos + w, len(example['paragraph']))
+                    candidate = example['paragraph'][best_pos:end]
+                    r = SequenceMatcher(None, example['answer'].lower(), candidate.lower()).ratio()
+                    if r > best_r:
+                        best_r = r
+                        best_span = candidate
+                        position = best_pos
+                if best_span and best_r >= 0.55:
+                    example['answer'] = best_span
+                else:
+                    position = -1
+        
         if position == -1:
             return None
         
