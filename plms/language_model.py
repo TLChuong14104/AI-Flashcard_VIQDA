@@ -113,8 +113,17 @@ def load_language_model(model_name,
                         logging.info(f"Successfully loaded slow T5Tokenizer for {model_name}")
                     except Exception as e4:
                         logging.error(f"Failed to load slow T5Tokenizer: {e4}")
-                        logging.error(f"All tokenizer loading attempts failed: {e3}")
-                        raise
+                        # If that also fails (e.g. missing spiece.model), load the tokenizer from VietAI/vit5-base
+                        try:
+                            fallback_model = 'VietAI/vit5-base'
+                            logging.warning(f"Attempting to load tokenizer from base model: {fallback_model}")
+                            tokenizer = transformers.AutoTokenizer.from_pretrained(
+                                fallback_model, cache_dir=cache_dir, token=hf_token, trust_remote_code=True)
+                            logging.info(f"Successfully loaded tokenizer from {fallback_model}")
+                        except Exception as e5:
+                            logging.error(f"Failed to load tokenizer from base model: {e5}")
+                            logging.error(f"All tokenizer loading attempts failed: {e3}")
+                            raise
                 else:
                     logging.error(f"All tokenizer loading attempts failed: {e3}")
                     raise
