@@ -151,6 +151,9 @@ class QGDataProcessor:
         if 'difficulty' in data:
             example['difficulty'] = data['difficulty']
 
+        # Add paragraph_question for QA training (question + context)
+        example['paragraph_question'] = f"question: {example['question']}, context: {example['paragraph']}"
+
         return example
 
     def process_data(self, input_dir='data/examples', output_dir='data'):

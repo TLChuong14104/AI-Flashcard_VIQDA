@@ -314,10 +314,11 @@ class TransformersQG:
             model = DEFAULT_MODELS[language]
 
         # classify model type
-        self.is_qg = 'qg' in model.split('-') if is_qg is None else is_qg
-        self.is_ae = 'ae' in model.split('-') if is_ae is None else is_ae
-        self.is_qa = 'qa' in model.split('-') if is_qa is None else is_qa
-        self.is_qag = 'qag' in model.split('-') if is_qag is None else is_qag
+        model_tokens = re.split(r'[^a-zA-Z0-9]', model)
+        self.is_qg = 'qg' in model_tokens if is_qg is None else is_qg
+        self.is_ae = 'ae' in model_tokens if is_ae is None else is_ae
+        self.is_qa = 'qa' in model_tokens if is_qa is None else is_qa
+        self.is_qag = 'qag' in model_tokens if is_qag is None else is_qag
         # configs
         self.model_name = model
         self.max_length = max_length
@@ -335,9 +336,11 @@ class TransformersQG:
             self.model_name, cache_dir=cache_dir, use_auth_token=use_auth_token, device_map=device_map,
             torch_dtype=torch_dtype, low_cpu_mem_usage=low_cpu_mem_usage)
         if 'add_prefix' not in config.to_dict().keys():
-            # this means the model is not fine-tuned
-            # assert add_prefix, '`add_prefix` is required for non-fine-tuned models'
-            self.add_prefix = add_prefix
+            # this means the model is not fine-tuned or config doesn't have it
+            if add_prefix is None:
+                self.add_prefix = any(x in model.lower() for x in ['t5', 'vit5'])
+            else:
+                self.add_prefix = add_prefix
         else:
             self.add_prefix = config.add_prefix
 
@@ -361,7 +364,7 @@ class TransformersQG:
             else:
                 logging.info(f"loading 2nd model for AE: {self.model_name_ae}")
                 self.tokenizer_ae, self.model_ae, config_ae = load_language_model(model_ae, cache_dir=cache_dir, use_auth_token=use_auth_token)
-                self.add_prefix_ae = config_ae.add_prefix
+                self.add_prefix_ae = getattr(config_ae, 'add_prefix', any(x in model_ae.lower() for x in ['t5', 'vit5']))
                 self.answer_model_type = 'pipeline'
             self.spacy_module = SpacyPipeline(language)
 
