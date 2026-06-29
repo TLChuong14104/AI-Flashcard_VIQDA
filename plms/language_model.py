@@ -104,8 +104,20 @@ def load_language_model(model_name,
                     use_fast=False)
                 logging.warning(f"Loaded tokenizer without trust_remote_code for {model_name}")
             except Exception as e3:
-                logging.error(f"All tokenizer loading attempts failed: {e3}")
-                raise
+                # Fallback specifically for T5/ViT5 models where tokenizer.json is broken
+                if any(x in model_name.lower() for x in ['t5', 'vit5']):
+                    try:
+                        logging.warning(f"Attempting to load slow T5Tokenizer directly for {model_name}")
+                        tokenizer = transformers.T5Tokenizer.from_pretrained(
+                            model_name, cache_dir=cache_dir, local_files_only=local_files_only, token=hf_token)
+                        logging.info(f"Successfully loaded slow T5Tokenizer for {model_name}")
+                    except Exception as e4:
+                        logging.error(f"Failed to load slow T5Tokenizer: {e4}")
+                        logging.error(f"All tokenizer loading attempts failed: {e3}")
+                        raise
+                else:
+                    logging.error(f"All tokenizer loading attempts failed: {e3}")
+                    raise
     
     config = transformers.AutoConfig.from_pretrained(
         model_name, local_files_only=local_files_only, cache_dir=cache_dir, token=hf_token, trust_remote_code=True)
