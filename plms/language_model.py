@@ -87,7 +87,7 @@ def load_language_model(model_name,
             model_name, cache_dir=cache_dir, local_files_only=local_files_only, token=hf_token, 
             trust_remote_code=True, use_fast=True)
         logging.info(f"Successfully loaded fast tokenizer for {model_name}")
-    except (TypeError, ValueError, AttributeError) as e:
+    except Exception as e:
         logging.warning(f"Failed to load fast tokenizer for {model_name}: {e}")
         # Try with use_fast=False
         try:
